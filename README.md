@@ -1,5 +1,18 @@
 # MCP Activity
 
+## Author and origin
+
+**D. Matthew Pegg — PeggSoft**
+
+Original source:
+
+    https://github.com/LuckyElba/MCPActivity
+
+MCP Activity is released under the **PeggSoft Permissive Attribution License**.
+It may be used, modified, distributed, and used commercially for any lawful
+purpose, provided attribution to D. Matthew Pegg / PeggSoft and a reference to
+the original source repository are retained. See `LICENSE` for the full terms.
+
 MCP Activity is a native x64 Windows tray application for supervising local MCP (Model Context Protocol) helper applications.
 
 It provides a compact status popup and a larger management window for starting, stopping, restarting, and monitoring MCP processes without leaving command-prompt or PowerShell windows open.

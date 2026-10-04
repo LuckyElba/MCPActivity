@@ -1,3 +1,8 @@
+// MCP Activity
+// Copyright (c) 2026 D. Matthew Pegg, PeggSoft
+// Original source: https://github.com/LuckyElba/MCPActivity
+// Licensed under the PeggSoft Permissive Attribution License. See LICENSE.
+
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
