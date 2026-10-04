@@ -1,0 +1,27 @@
+# Visual Studio / build output
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.VC.opendb
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.obj
+*.tlog
+*.lastbuildstate
+
+# Local runtime configuration
+mcp-activity.ini
+
+# Development patch/scratch files
+patch_*.py
+main.cpp.tmp*
+
+# OS/editor noise
+Thumbs.db
+Desktop.ini
+*.swp
