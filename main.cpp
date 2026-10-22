@@ -14,6 +14,9 @@
 
 #include <algorithm>
 #include <deque>
+#include <fstream>
+#include <filesystem>
+#include <iterator>
 #include <iomanip>
 #include <sstream>
 #include <string>
@@ -47,6 +50,9 @@ constexpr int IDC_STOP_ALL = 1106;
 constexpr int IDC_EDIT_CONFIG = 1107;
 constexpr int IDC_START_WINDOWS = 1108;
 constexpr int IDC_LOG = 1109;
+constexpr int IDC_COMMUNICATIONS = 1110;
+constexpr int IDC_COMM_GRID = 1111;
+constexpr UINT_PTR kCommunicationsTimer = 2;
 
 enum class AppState
 {
@@ -70,6 +76,9 @@ struct ManagedApp
     std::wstring workingDirectory;
     std::wstring match1;
     std::wstring match2;
+    bool monitorOnly = false;
+    std::wstring matchExecutable;
+    std::wstring communicationLog;
     bool autoStart = true;
     bool restartOnFailure = true;
     bool wantedRunning = false;
@@ -86,6 +95,11 @@ HWND g_mainWindow = nullptr;
 HWND g_detailsWindow = nullptr;
 HWND g_list = nullptr;
 HWND g_logEdit = nullptr;
+HWND g_commGrid = nullptr;
+int g_commSortColumn = 0;
+bool g_commSortAscending = false;
+int g_communicationsProfile = -1;
+std::wstring g_lastCommunicationsText;
 HFONT g_uiFont = nullptr;
 HFONT g_uiFontBold = nullptr;
 HBRUSH g_detailsBrush = nullptr;
@@ -342,6 +356,8 @@ std::vector<ProcessInfo> QueryProcesses()
 
 bool Matches(const ManagedApp &app, const ProcessInfo &process)
 {
+    if (!app.matchExecutable.empty() && ToLower(process.name) != ToLower(app.matchExecutable))
+        return false;
     const std::wstring line = ToLower(process.commandLine);
     const std::wstring first = ToLower(app.match1);
     const std::wstring second = ToLower(app.match2);
@@ -418,8 +434,11 @@ ManagedApp LoadApp(const wchar_t *section)
     app.workingDirectory = ReadIniString(section, L"WorkingDirectory", L"");
     app.match1 = ReadIniString(section, L"Match1", L"");
     app.match2 = ReadIniString(section, L"Match2", L"");
-    app.autoStart = GetPrivateProfileIntW(section, L"AutoStart", 1, g_iniPath.c_str()) != 0;
-    app.restartOnFailure = GetPrivateProfileIntW(section, L"RestartOnFailure", 1, g_iniPath.c_str()) != 0;
+    app.matchExecutable = ReadIniString(section, L"MatchExecutable", L"");
+    app.communicationLog = ReadIniString(section, L"CommunicationLog", L"");
+    app.monitorOnly = GetPrivateProfileIntW(section, L"MonitorOnly", 0, g_iniPath.c_str()) != 0;
+    app.autoStart = !app.monitorOnly && GetPrivateProfileIntW(section, L"AutoStart", 1, g_iniPath.c_str()) != 0;
+    app.restartOnFailure = !app.monitorOnly && GetPrivateProfileIntW(section, L"RestartOnFailure", 1, g_iniPath.c_str()) != 0;
     return app;
 }
 
@@ -427,8 +446,27 @@ void LoadConfiguration()
 {
     WriteDefaultConfigIfNeeded();
     g_apps.clear();
-    g_apps.push_back(LoadApp(L"Desktop Commander"));
-    g_apps.push_back(LoadApp(L"ScreenShot"));
+    std::vector<wchar_t> sections(4096);
+    for (;;)
+    {
+        DWORD count = GetPrivateProfileSectionNamesW(sections.data(), static_cast<DWORD>(sections.size()), g_iniPath.c_str());
+        if (count < sections.size() - 2)
+            break;
+        if (sections.size() >= 1024 * 1024)
+        {
+            AddLog(L"Configuration contains too many sections.");
+            return;
+        }
+        sections.resize(sections.size() * 2);
+    }
+    for (const wchar_t *section = sections.data(); *section; section += wcslen(section) + 1)
+    {
+        if (ToLower(section) == L"general")
+            continue;
+        ManagedApp app = LoadApp(section);
+        if (!app.match1.empty() || !app.match2.empty() || !app.command.empty())
+            g_apps.push_back(std::move(app));
+    }
 }
 
 bool LaunchApp(size_t index)
@@ -437,6 +475,8 @@ bool LaunchApp(size_t index)
         return false;
 
     ManagedApp &app = g_apps[index];
+    if (app.monitorOnly)
+        return false;
     app.wantedRunning = true;
     app.lastError.clear();
 
@@ -487,6 +527,8 @@ void KillAppProcesses(size_t index, bool intentional)
         return;
 
     ManagedApp &app = g_apps[index];
+    if (app.monitorOnly)
+        return;
     if (intentional)
         app.wantedRunning = false;
 
@@ -516,6 +558,8 @@ void RestartApp(size_t index)
     if (index >= g_apps.size())
         return;
 
+    if (g_apps[index].monitorOnly)
+        return;
     AddLog(g_apps[index].name + L": restart requested.");
     g_apps[index].wantedRunning = true;
     KillAppProcesses(index, false);
@@ -673,11 +717,24 @@ void UpdateDetailsList()
         std::wstring restartText = app.restartOnFailure ? L"Yes" : L"No";
         ListView_SetItemText(g_list, row, 4, restartText.data());
 
-        ListView_SetItemText(g_list, row, 5, const_cast<wchar_t *>(app.command.c_str()));
+        std::wstring monitorText = app.monitorOnly ? L"Yes" : L"No";
+        ListView_SetItemText(g_list, row, 5, monitorText.data());
+
+        const wchar_t *command = app.monitorOnly ? L"Client-managed (monitor only)" : app.command.c_str();
+        ListView_SetItemText(g_list, row, 6, const_cast<wchar_t *>(command));
     }
 
+    const bool controllable = selectedIndex >= 0 && selectedIndex < static_cast<int>(g_apps.size()) &&
+                              !g_apps[selectedIndex].monitorOnly;
+    for (int id : {IDC_START, IDC_STOP, IDC_RESTART})
+        EnableWindow(GetDlgItem(g_detailsWindow, id), controllable);
+    const bool anyControllable = std::any_of(g_apps.begin(), g_apps.end(),
+                                           [](const ManagedApp &app) { return !app.monitorOnly; });
+    EnableWindow(GetDlgItem(g_detailsWindow, IDC_START_ALL), anyControllable);
+    EnableWindow(GetDlgItem(g_detailsWindow, IDC_STOP_ALL), anyControllable);
     if (rebuildRows)
     {
+
         if (selectedIndex >= 0 && selectedIndex < static_cast<int>(g_apps.size()))
         {
             ListView_SetItemState(g_list, selectedIndex, LVIS_SELECTED, LVIS_SELECTED);
@@ -737,6 +794,12 @@ void RefreshStatus()
                                                                                          : AppState::Green;
             app.lastError.clear();
             app.nextRestartTick = 0;
+        }
+        else if (app.monitorOnly)
+        {
+            app.state = AppState::Clear;
+            app.wantedRunning = false;
+            app.lastError.clear();
         }
         else if (app.wantedRunning)
         {
@@ -1290,6 +1353,189 @@ LRESULT CALLBACK ListViewSubclassProc(HWND hwnd, UINT message, WPARAM wParam, LP
     return DefSubclassProc(hwnd, message, wParam, lParam);
 }
 
+void PopulateCommunicationsGrid(const std::wstring &text);
+
+void ShowCommunications(size_t index)
+{
+    if (index >= g_apps.size() || !g_logEdit)
+        return;
+
+    if (g_communicationsProfile != static_cast<int>(index))
+    {
+        g_lastCommunicationsText.clear();
+        if (g_commGrid) ListView_DeleteAllItems(g_commGrid);
+    }
+    g_communicationsProfile = static_cast<int>(index);
+    const std::wstring &path = g_apps[index].communicationLog;
+    HWND logLabel = FindWindowExW(g_detailsWindow, nullptr, L"STATIC", nullptr);
+    // The log label is the only STATIC child in the Details view.
+    if (logLabel)
+    {
+        const std::wstring caption = L"Activity / errors";
+        SetWindowTextW(logLabel, caption.c_str());
+    }
+    if (path.empty())
+    {
+        if (g_commGrid) ShowWindow(g_commGrid, SW_HIDE);
+        ShowWindow(g_logEdit, SW_SHOW);
+        SetWindowTextW(g_logEdit, L"No CommunicationLog file configured for this profile. Set CommunicationLog to a local JSONL metadata log in mcp-activity.ini.");
+        return;
+    }
+
+    std::ifstream input(std::filesystem::path(path), std::ios::binary);
+    if (!input)
+    {
+        if (g_commGrid) ShowWindow(g_commGrid, SW_HIDE);
+        ShowWindow(g_logEdit, SW_SHOW);
+        SetWindowTextW(g_logEdit, L"Communication metadata log is not available.");
+        return;
+    }
+
+    input.seekg(0, std::ios::end);
+    const std::streamoff length = input.tellg();
+    if (length < 0)
+        return;
+    const std::streamoff offset = std::max<std::streamoff>(0, length - 32768);
+    input.seekg(offset);
+    if (offset)
+    {
+        std::string partial;
+        std::getline(input, partial);
+    }
+    std::string content((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    if (content.empty())
+    {
+        if (g_commGrid) ShowWindow(g_commGrid, SW_HIDE);
+        ShowWindow(g_logEdit, SW_SHOW);
+        SetWindowTextW(g_logEdit, L"No communications recorded.");
+        return;
+    }
+    int required = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, content.data(),
+                                        static_cast<int>(content.size()), nullptr, 0);
+    if (required <= 0)
+    {
+        if (g_commGrid) ShowWindow(g_commGrid, SW_HIDE);
+        ShowWindow(g_logEdit, SW_SHOW);
+        SetWindowTextW(g_logEdit, L"Metadata log is not valid UTF-8.");
+        return;
+    }
+    std::wstring wide(static_cast<size_t>(required), L'\0');
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, content.data(),
+                        static_cast<int>(content.size()), wide.data(), required);
+    ShowWindow(g_logEdit, SW_HIDE);
+    if (g_commGrid) ShowWindow(g_commGrid, SW_SHOW);
+    if (wide != g_lastCommunicationsText)
+    {
+        g_lastCommunicationsText = wide;
+        PopulateCommunicationsGrid(wide);
+    }
+}
+
+
+std::wstring MetadataField(const std::wstring &line, const wchar_t *key)
+{
+    const std::wstring needle = std::wstring(L"\"") + key + L"\":";
+    size_t pos = line.find(needle);
+    if (pos == std::wstring::npos)
+        return L"";
+    pos += needle.length();
+    while (pos < line.size() && iswspace(line[pos])) ++pos;
+    if (pos == line.size()) return L"";
+    if (line[pos] == L'"')
+    {
+        ++pos;
+        std::wstring value;
+        while (pos < line.size())
+        {
+            if (line[pos] == L'\\' && pos + 1 < line.size())
+            {
+                ++pos;
+                value += line[pos++];
+            }
+            else if (line[pos] == L'"')
+                break;
+            else
+                value += line[pos++];
+        }
+        return value;
+    }
+    size_t end = line.find_first_of(L",}", pos);
+    return line.substr(pos, end == std::wstring::npos ? end : end - pos);
+}
+
+std::wstring FormatCommunicationTimestamp(const std::wstring &value)
+{
+    // Proxy timestamps are UTC ISO-8601, with Z or +00:00 offsets.
+    if (value.size() < 19 || value[4] != L'-' || value[10] != L'T')
+        return value;
+    if (value.find(L"+00:00") == std::wstring::npos &&
+        value.find(L'Z') == std::wstring::npos)
+        return value;
+
+    SYSTEMTIME utc{};
+    int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
+    if (swscanf_s(value.c_str(), L"%d-%d-%dT%d:%d:%d",
+                  &year, &month, &day, &hour, &minute, &second) != 6)
+        return value;
+    if (year < 1601 || month < 1 || month > 12 || day < 1 || day > 31 ||
+        hour > 23 || minute > 59 || second > 59)
+        return value;
+    utc.wYear = static_cast<WORD>(year);
+    utc.wMonth = static_cast<WORD>(month);
+    utc.wDay = static_cast<WORD>(day);
+    utc.wHour = static_cast<WORD>(hour);
+    utc.wMinute = static_cast<WORD>(minute);
+    utc.wSecond = static_cast<WORD>(second);
+    SYSTEMTIME local{};
+    if (!SystemTimeToTzSpecificLocalTime(nullptr, &utc, &local))
+        return value;
+    wchar_t formatted[64]{};
+    swprintf_s(formatted, L"%02u/%02u/%04u %02u:%02u",
+               local.wDay, local.wMonth, local.wYear,
+               local.wHour, local.wMinute);
+    return formatted;
+}
+
+void PopulateCommunicationsGrid(const std::wstring &content)
+{
+    if (!g_commGrid) return;
+    std::vector<std::vector<std::wstring>> rows;
+    std::wistringstream stream(content);
+    std::wstring line;
+    const wchar_t *keys[] = {L"timestamp", L"direction", L"method", L"id_hash",
+                             L"duration_ms", L"bytes", L"error"};
+    while (std::getline(stream, line))
+    {
+        if (line.find(L'{') == std::wstring::npos) continue;
+        std::vector<std::wstring> row;
+        for (const wchar_t *key : keys) row.push_back(MetadataField(line, key));
+        row[0] = FormatCommunicationTimestamp(row[0]);
+        row.push_back(g_communicationsProfile >= 0 && g_communicationsProfile < static_cast<int>(g_apps.size())
+                          ? g_apps[g_communicationsProfile].communicationLog : L"");
+        rows.push_back(std::move(row));
+    }
+    const int column = g_commSortColumn;
+    std::stable_sort(rows.begin(), rows.end(), [column](const auto &a, const auto &b)
+    {
+        const int cmp = a[column].compare(b[column]);
+        return g_commSortAscending ? cmp < 0 : cmp > 0;
+    });
+    SendMessageW(g_commGrid, WM_SETREDRAW, FALSE, 0);
+    ListView_DeleteAllItems(g_commGrid);
+    for (size_t i = 0; i < rows.size(); ++i)
+    {
+        LVITEMW item{};
+        item.mask = LVIF_TEXT;
+        item.iItem = static_cast<int>(i);
+        item.pszText = rows[i][0].data();
+        ListView_InsertItem(g_commGrid, &item);
+        for (int col = 1; col < 8; ++col)
+            ListView_SetItemText(g_commGrid, static_cast<int>(i), col, rows[i][col].data());
+    }
+    SendMessageW(g_commGrid, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(g_commGrid, nullptr, FALSE);
+}
+
 void InitializeDetailsControls(HWND hwnd)
 {
     RecreateUiFonts(hwnd);
@@ -1321,8 +1567,9 @@ void InitializeDetailsControls(HWND hwnd)
         int width;
     };
 
-    const Column columns[] = {{L"MCP application", 165}, {L"Status", 100}, {L"PID(s)", 125},
-                              {L"Auto start", 90},       {L"Restart", 90}, {L"Command", 390}};
+    const Column columns[] = {{L"MCP application", 165}, {L"Status", 100}, {L"PID(s)", 200},
+                              {L"Auto start", 90},       {L"Restart", 90}, {L"Monitor only", 132},
+                              {L"Command", 390}};
 
     for (int i = 0; i < static_cast<int>(std::size(columns)); ++i)
     {
@@ -1339,7 +1586,8 @@ void InitializeDetailsControls(HWND hwnd)
         const wchar_t *text;
     } buttons[] = {{IDC_START, L"Start"},       {IDC_STOP, L"Stop"},
                    {IDC_RESTART, L"Restart"},   {IDC_START_ALL, L"Start All"},
-                   {IDC_STOP_ALL, L"Stop All"}, {IDC_EDIT_CONFIG, L"Edit Config..."}};
+                   {IDC_STOP_ALL, L"Stop All"}, {IDC_EDIT_CONFIG, L"Edit Config..."},
+                   {IDC_COMMUNICATIONS, L"Communications"}};
 
     for (const auto &button : buttons)
     {
@@ -1356,7 +1604,7 @@ void InitializeDetailsControls(HWND hwnd)
     g_runAtStartupEnabled = IsRunAtStartupEnabled();
     SetWindowTheme(startWindows, L"DarkMode_Explorer", nullptr);
 
-    HWND logLabel = CreateWindowExW(0, L"STATIC", L"Activity / errors", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0,
+    HWND logLabel = CreateWindowExW(0, L"STATIC", L"Activity / errors", WS_CHILD | WS_VISIBLE | SS_PATHELLIPSIS, 0, 0, 0, 0,
                                     hwnd, nullptr, g_instance, nullptr);
     SendMessageW(logLabel, WM_SETFONT, reinterpret_cast<WPARAM>(g_uiFontBold), TRUE);
 
@@ -1367,6 +1615,22 @@ void InitializeDetailsControls(HWND hwnd)
     SendMessageW(g_logEdit, WM_SETFONT, reinterpret_cast<WPARAM>(g_uiFont), TRUE);
     SetWindowTheme(g_logEdit, L"DarkMode_Explorer", nullptr);
 
+    g_commGrid = CreateWindowExW(0, WC_LISTVIEWW, L"", WS_CHILD | WS_BORDER | LVS_REPORT | LVS_SINGLESEL,
+                                0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_COMM_GRID)), g_instance, nullptr);
+    SendMessageW(g_commGrid, WM_SETFONT, reinterpret_cast<WPARAM>(g_uiFont), TRUE);
+    SetWindowTheme(g_commGrid, L"DarkMode_Explorer", nullptr);
+    ListView_SetExtendedListViewStyle(g_commGrid, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+    ListView_SetBkColor(g_commGrid, RGB(31, 33, 36));
+    ListView_SetTextBkColor(g_commGrid, RGB(31, 33, 36));
+    ListView_SetTextColor(g_commGrid, RGB(236, 238, 241));
+    const wchar_t *names[] = {L"Timestamp", L"Direction", L"Method", L"Request ID", L"Latency ms", L"Bytes", L"Error", L"Log file (double-click)"};
+    const int widths[] = {145, 100, 120, 125, 85, 65, 60, 220};
+    for (int i = 0; i < 8; ++i)
+    {
+        LVCOLUMNW col{}; col.mask = LVCF_TEXT | LVCF_WIDTH;
+        col.pszText = const_cast<wchar_t *>(names[i]); col.cx = ScaleForDpi(widths[i], dpi);
+        ListView_InsertColumn(g_commGrid, i, &col);
+    }
     LayoutDetails(hwnd);
     AddLog(L"Details opened.");
     UpdateDetailsList();
@@ -1402,7 +1666,8 @@ void LayoutDetails(HWND hwnd)
         int id;
         int width;
     } buttons[] = {{IDC_START, 88},      {IDC_STOP, 88},      {IDC_RESTART, 92},
-                   {IDC_START_ALL, 100}, {IDC_STOP_ALL, 100}, {IDC_EDIT_CONFIG, 125}};
+                   {IDC_START_ALL, 100}, {IDC_STOP_ALL, 100}, {IDC_EDIT_CONFIG, 125},
+                   {IDC_COMMUNICATIONS, 140}};
 
     for (const auto &button : buttons)
     {
@@ -1419,7 +1684,7 @@ void LayoutDetails(HWND hwnd)
     if (startWindows)
     {
         const int checkWidth = ScaleForDpi(275, dpi);
-        MoveWindow(startWindows, width - margin - checkWidth, buttonY + ScaleForDpi(5, dpi), checkWidth,
+        MoveWindow(startWindows, width - margin - checkWidth, ScaleForDpi(344, dpi), checkWidth,
                    ScaleForDpi(28, dpi), TRUE);
     }
 
@@ -1427,10 +1692,15 @@ void LayoutDetails(HWND hwnd)
     const int labelY = ScaleForDpi(344, dpi);
     if (logLabel)
     {
-        MoveWindow(logLabel, margin, labelY, ScaleForDpi(220, dpi), ScaleForDpi(28, dpi), TRUE);
+        MoveWindow(logLabel, margin, labelY, std::max(ScaleForDpi(220, dpi), width - margin * 2 - ScaleForDpi(280, dpi)), ScaleForDpi(28, dpi), TRUE);
     }
 
     const int logY = ScaleForDpi(374, dpi);
+    if (g_commGrid)
+    {
+        MoveWindow(g_commGrid, margin, logY, width - margin * 2,
+                   std::max(ScaleForDpi(130, dpi), height - logY - margin), TRUE);
+    }
     if (g_logEdit)
     {
         MoveWindow(g_logEdit, margin, logY, width - margin * 2,
@@ -1466,28 +1736,27 @@ void PaintMain(HWND hwnd)
     TextOutW(dc, scale(20), scale(17), L"MCP Activity", 12);
 
     SelectObject(dc, rowFont);
-    const int rowY[] = {scale(68), scale(108)};
-
-    for (size_t i = 0; i < g_apps.size() && i < 2; ++i)
+    for (size_t i = 0; i < g_apps.size(); ++i)
     {
-        TextOutW(dc, scale(22), rowY[i] - scale(11), g_apps[i].name.c_str(),
+        const int rowY = scale(68 + 40 * static_cast<int>(i));
+        TextOutW(dc, scale(22), rowY - scale(11), g_apps[i].name.c_str(),
                  static_cast<int>(g_apps[i].name.size()));
 
-        DrawLed(dc, scale(355), rowY[i], g_apps[i].state, dpi);
+        DrawLed(dc, scale(355), rowY, g_apps[i].state, dpi);
 
         SelectObject(dc, statusFont);
         SetTextColor(dc,
                      g_apps[i].state == AppState::Clear ? RGB(155, 160, 166) : StateColor(g_apps[i].state));
         const wchar_t *status = StateText(g_apps[i].state);
-        TextOutW(dc, scale(375), rowY[i] - scale(8), status, static_cast<int>(wcslen(status)));
+        TextOutW(dc, scale(375), rowY - scale(8), status, static_cast<int>(wcslen(status)));
         SetTextColor(dc, RGB(235, 237, 240));
         SelectObject(dc, rowFont);
     }
 
     HPEN linePen = CreatePen(PS_SOLID, std::max(1, scale(1)), RGB(66, 69, 74));
     HGDIOBJ oldPen = SelectObject(dc, linePen);
-    MoveToEx(dc, scale(20), scale(137), nullptr);
-    LineTo(dc, rc.right - scale(20), scale(137));
+    MoveToEx(dc, scale(20), scale(57 + 40 * static_cast<int>(g_apps.size())), nullptr);
+    LineTo(dc, rc.right - scale(20), scale(57 + 40 * static_cast<int>(g_apps.size())));
     SelectObject(dc, oldPen);
     DeleteObject(linePen);
 
@@ -1587,6 +1856,12 @@ LRESULT CALLBACK DetailsProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPar
     case WM_CREATE:
         SetDarkWindow(hwnd);
         InitializeDetailsControls(hwnd);
+        SetTimer(hwnd, kCommunicationsTimer, 1200, nullptr);
+        return 0;
+
+    case WM_TIMER:
+        if (wParam == kCommunicationsTimer && g_communicationsProfile >= 0)
+            ShowCommunications(static_cast<size_t>(g_communicationsProfile));
         return 0;
 
     case WM_SIZE:
@@ -1629,6 +1904,36 @@ LRESULT CALLBACK DetailsProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPar
     case WM_NOTIFY:
     {
         NMHDR *notification = reinterpret_cast<NMHDR *>(lParam);
+        if (notification && notification->hwndFrom == g_list && notification->code == LVN_ITEMCHANGED)
+        {
+            const NMLISTVIEW *change = reinterpret_cast<const NMLISTVIEW *>(lParam);
+            if (g_communicationsProfile >= 0 &&
+                (change->uChanged & LVIF_STATE) &&
+                (change->uNewState & LVIS_SELECTED) &&
+                !(change->uOldState & LVIS_SELECTED) &&
+                change->iItem >= 0 && change->iItem < static_cast<int>(g_apps.size()))
+                ShowCommunications(static_cast<size_t>(change->iItem));
+        }
+        if (notification && notification->hwndFrom == g_commGrid && notification->code == NM_DBLCLK)
+        {
+            const int row = reinterpret_cast<NMITEMACTIVATE *>(lParam)->iItem;
+            if (row >= 0 && g_communicationsProfile >= 0 &&
+                g_communicationsProfile < static_cast<int>(g_apps.size()))
+            {
+                const std::wstring &path = g_apps[g_communicationsProfile].communicationLog;
+                if (!path.empty() && GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES)
+                    ShellExecuteW(hwnd, L"open", L"notepad.exe", path.c_str(), nullptr, SW_SHOWNORMAL);
+            }
+            return 0;
+        }
+        if (notification && notification->hwndFrom == g_commGrid && notification->code == LVN_COLUMNCLICK)
+        {
+            const int column = reinterpret_cast<NMLISTVIEW *>(lParam)->iSubItem;
+            g_commSortAscending = (column == g_commSortColumn) ? !g_commSortAscending : true;
+            g_commSortColumn = column;
+            PopulateCommunicationsGrid(g_lastCommunicationsText);
+            return 0;
+        }
         HWND listHeader = g_list ? ListView_GetHeader(g_list) : nullptr;
 
         if (notification && g_list && notification->hwndFrom == g_list && notification->code == NM_CUSTOMDRAW)
@@ -1764,6 +2069,10 @@ LRESULT CALLBACK DetailsProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPar
         {
             OpenConfigEditor(hwnd);
         }
+        else if (id == IDC_COMMUNICATIONS && selected >= 0)
+        {
+            ShowCommunications(static_cast<size_t>(selected));
+        }
         else if (id == IDC_START_WINDOWS)
         {
             HWND check = reinterpret_cast<HWND>(lParam);
@@ -1781,9 +2090,13 @@ LRESULT CALLBACK DetailsProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPar
         return 0;
 
     case WM_DESTROY:
+        KillTimer(hwnd, kCommunicationsTimer);
+        g_communicationsProfile = -1;
+        g_lastCommunicationsText.clear();
         g_detailsWindow = nullptr;
         g_list = nullptr;
         g_logEdit = nullptr;
+        g_commGrid = nullptr;
         return 0;
 
     case WM_ERASEBKGND:
@@ -1811,7 +2124,7 @@ void LayoutMain(HWND hwnd)
     const int buttonWidth = ScaleForDpi(120, dpi);
     const int buttonHeight = ScaleForDpi(36, dpi);
     const int x = ((rc.right - rc.left) - buttonWidth) / 2;
-    const int y = ScaleForDpi(151, dpi);
+    const int y = ScaleForDpi(71 + 40 * static_cast<int>(g_apps.size()), dpi);
 
     HWND details = GetDlgItem(hwnd, IDC_DETAILS);
     if (details)
@@ -1999,11 +2312,57 @@ bool EnsureSingleInstance()
     }
     return true;
 }
+int VerifyMonitoring(const wchar_t *output)
+{
+    LoadConfiguration();
+    if (!InitializeWmi())
+        return 2;
+    const auto processes = QueryProcesses();
+    bool passed = !g_apps.empty();
+    unsigned monitored = 0;
+    for (size_t i = 0; i < g_apps.size(); ++i)
+    {
+        auto &app = g_apps[i];
+        unsigned matches = 0;
+        for (const auto &process : processes)
+            if (Matches(app, process)) ++matches;
+        WritePrivateProfileStringW(app.name.c_str(), L"MatchedProcesses", std::to_wstring(matches).c_str(), output);
+        if (!app.monitorOnly)
+            continue;
+        ++monitored;
+        app.pids = {GetCurrentProcessId()};
+        passed = passed && !app.autoStart && !app.restartOnFailure && !LaunchApp(i);
+        KillAppProcesses(i, true);
+        RestartApp(i);
+        passed = passed && app.pids == std::vector<DWORD>{GetCurrentProcessId()} && !app.wantedRunning;
+        ProcessInfo wrongExecutable{1, L"unrelated.exe", app.match1 + L" " + app.match2};
+        if (!app.matchExecutable.empty()) passed = passed && !Matches(app, wrongExecutable);
+        WritePrivateProfileStringW(app.name.c_str(), L"MonitorOnlyGuards", passed ? L"passed" : L"failed", output);
+    }
+    WritePrivateProfileStringW(L"Verification", L"Profiles", std::to_wstring(g_apps.size()).c_str(), output);
+    WritePrivateProfileStringW(L"Verification", L"MonitorOnlyProfiles", std::to_wstring(monitored).c_str(), output);
+    WritePrivateProfileStringW(L"Verification", L"Passed", passed ? L"1" : L"0", output);
+    g_wmi->Release();
+    g_wmi = nullptr;
+    return passed ? 0 : 3;
+}
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
 {
     g_instance = instance;
+    int argumentCount = 0;
+    wchar_t **arguments = CommandLineToArgvW(GetCommandLineW(), &argumentCount);
+    if (arguments && argumentCount == 3 && wcscmp(arguments[1], L"--verify-monitoring") == 0)
+    {
+        g_exePath = GetModulePath();
+        g_iniPath = GetDirectoryName(g_exePath) + L"\\mcp-activity.ini";
+        const int result = VerifyMonitoring(arguments[2]);
+        LocalFree(arguments);
+        return result;
+    }
+    const bool startInTray = arguments && argumentCount == 2 && wcscmp(arguments[1], L"--tray") == 0;
+    if (arguments) LocalFree(arguments);
     g_taskbarCreatedMessage = RegisterWindowMessageW(L"TaskbarCreated");
 
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -2044,7 +2403,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
 
     const UINT startupDpi = GetDpiForSystem();
     const int mainWidth = ScaleForDpi(470, startupDpi);
-    const int mainHeight = ScaleForDpi(250, startupDpi);
+    const int mainHeight = ScaleForDpi(170 + 40 * static_cast<int>(g_apps.size()), startupDpi);
 
     g_mainWindow = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, kMainClass, L"MCP Activity",
                                    WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT,
@@ -2068,7 +2427,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
         }
     }
 
-    ShowMainWindow();
+    if (!startInTray)
+        ShowMainWindow();
     UpdateWindow(g_mainWindow);
 
     MSG message{};

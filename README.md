@@ -113,12 +113,12 @@ The runtime INI is intentionally not committed because commands and working
 directories are machine-specific. If the file does not exist, MCP Activity creates
 a default configuration for Desktop Commander Remote and WindowCaptureMCP.
 
-The current version loads these two section names specifically:
+Configuration loads every application section except [General]. Existing section names remain compatible:
 
     [Desktop Commander]
     [ScreenShot]
 
-Keep those section names unchanged.
+Additional sections may use descriptive names. Set MonitorOnly=1 for stdio servers owned by an MCP client; this disables launch, stop, restart and automatic recovery for that profile. MatchExecutable optionally requires an exact process executable name.
 
 ### Desktop Commander configuration
 
@@ -210,3 +210,40 @@ the INI in the Windows default editor.
 ## Source formatting
 
 The project uses Allman brace formatting. The included `.clang-format` contains the formatting rules used for `main.cpp`.
+
+### Monitoring client-managed processes
+
+MCP Activity can observe processes launched and controlled by another application, including MCP servers that communicate over standard input/output (stdio). Define a profile with `MonitorOnly=1`, `AutoStart=0` and `RestartOnFailure=0` to discover matching processes and show their status without taking ownership. Start, Stop, Restart, Start All and Stop All do not control monitor-only profiles. When a client shuts down its process, its status returns to stopped; MCP Activity does not launch a replacement.
+
+For example, add a section to your local `mcp-activity.ini`:
+
+```ini
+[Client-managed service]
+MatchExecutable=python.exe
+Match1=example_server.py
+MonitorOnly=1
+AutoStart=0
+RestartOnFailure=0
+```
+
+Use process-matching criteria appropriate to your environment. The compact popup sizes itself for the configured profiles, and the details table labels these entries `Client-managed (monitor only)`.
+
+### Verification and tray startup
+
+Run `MCPActivity.exe --verify-monitoring <absolute-result.ini>` to load the local configuration, discover matching processes and check monitor-only control guards using the verifier's own process ID. The result INI contains `Verification/Passed=1` only when all guard checks pass. The verifier does not use monitored client process IDs for its control-guard exercises.
+
+Launch with `MCPActivity.exe --tray` to start with only the notification-area icon, without showing the popup or taking focus from other applications.
+
+### Experimental MCP communication diagnostics
+
+`mcp_stdio_proxy.py` is an optional, project-independent diagnostic proxy for **stdio** MCP servers. It is not automatically enabled by MCP Activity; the MCP client must be configured to launch the proxy instead of launching its server directly. The proxy then launches the supplied server and forwards standard input and output in both directions. Example:
+
+```powershell
+python mcp_stdio_proxy.py --log C:\path\to\private\activity.jsonl -- python C:\path\to\server.py
+```
+
+The log contains timestamped JSONL records of direction, message type, JSON-RPC method, a short hash of the request ID, byte counts, response latency (when paired) and whether a response has an error. **Message parameters, results and full payloads are never logged**; there is no payload-capture switch. Treat the metadata log as potentially sensitive, keep it in a private directory and delete it when no longer needed. No application traffic is intercepted merely by process discovery or by enabling `MonitorOnly`.
+
+The Details window now has a **Communications** button. To inspect an existing JSONL metadata log for a profile, add `CommunicationLog=C:\path\to\private\activity.jsonl` to its local INI section, restart MCP Activity, select that profile and press **Communications**. It displays the last approximately 32 KiB as a dedicated communications grid with local-time `DD/MM/YYYY HH:mm` timestamps, direction, method, request ID hash, latency, bytes and errors. The configured log-file path appears in the grid's `Log file` column; double-click a communication row to open that file in Notepad. Click a column heading to change sorting. The selected profile refreshes approximately every 1.2 seconds while Details is open. Once Communications is activated, selecting another MCP application in the upper grid switches the communications display to that application's log automatically. This is passive file inspection: MCP Activity does not intercept an unproxied process, and does not require ownership of the process. Configure this only for trusted local logs; the log remains private and is not uploaded.
+
+An additional **experimental** localhost HTTP proxy is available for Streamable HTTP transports. Run `python mcp_http_proxy.py --listen-port 8766 --upstream http://127.0.0.1:8765/mcp --log C:\path\to\private\http-activity.jsonl`, then configure the client to use `http://127.0.0.1:8766/mcp`. It forwards HTTP GET, POST and DELETE requests, including authentication headers, while logging only metadata. The server binds to `127.0.0.1`, never writes request or response bodies to the log, and does not modify existing MCP configurations. Verify with `python test_http_proxy.py`. This experimental forwarding path has **not** been validated for all Streamable HTTP requirements, including long-lived SSE streams, session termination or reconnection, or arbitrary upstream authentication mechanisms. Use it only with trusted endpoints. The stdio proxy likewise has not been verified with every MCP client or transport. Run `python test_stdio_proxy.py` to smoke-test it.
