@@ -1,5 +1,7 @@
 # MCP Activity
 
+**Current version: 1.1.0**
+
 ## Author and origin
 
 **D. Matthew Pegg — PeggSoft**

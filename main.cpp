@@ -1268,7 +1268,7 @@ void CreateDetailsWindow()
     const int width = ScaleForDpi(1020, dpi);
     const int height = ScaleForDpi(650, dpi);
 
-    g_detailsWindow = CreateWindowExW(WS_EX_APPWINDOW, kDetailsClass, L"MCP Activity - Details",
+    g_detailsWindow = CreateWindowExW(WS_EX_APPWINDOW, kDetailsClass, L"MCP Activity v1.1.0 - Details",
                                       WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, width,
                                       height, nullptr, nullptr, g_instance, nullptr);
 }
@@ -2405,7 +2405,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
     const int mainWidth = ScaleForDpi(470, startupDpi);
     const int mainHeight = ScaleForDpi(170 + 40 * static_cast<int>(g_apps.size()), startupDpi);
 
-    g_mainWindow = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, kMainClass, L"MCP Activity",
+    g_mainWindow = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, kMainClass, L"MCP Activity v1.1.0",
                                    WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT,
                                    mainWidth, mainHeight, nullptr, nullptr, g_instance, nullptr);
 
