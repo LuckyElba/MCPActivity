@@ -79,6 +79,7 @@ struct ManagedApp
     bool monitorOnly = false;
     std::wstring matchExecutable;
     std::wstring communicationLog;
+    std::wstring testStatusFile;
     bool autoStart = true;
     bool restartOnFailure = true;
     bool wantedRunning = false;
@@ -436,6 +437,7 @@ ManagedApp LoadApp(const wchar_t *section)
     app.match2 = ReadIniString(section, L"Match2", L"");
     app.matchExecutable = ReadIniString(section, L"MatchExecutable", L"");
     app.communicationLog = ReadIniString(section, L"CommunicationLog", L"");
+    app.testStatusFile = ReadIniString(section, L"TestStatusFile", L"");
     app.monitorOnly = GetPrivateProfileIntW(section, L"MonitorOnly", 0, g_iniPath.c_str()) != 0;
     app.autoStart = !app.monitorOnly && GetPrivateProfileIntW(section, L"AutoStart", 1, g_iniPath.c_str()) != 0;
     app.restartOnFailure = !app.monitorOnly && GetPrivateProfileIntW(section, L"RestartOnFailure", 1, g_iniPath.c_str()) != 0;
@@ -656,6 +658,39 @@ void UpdateTrayTooltip()
     }
 }
 
+std::wstring MetadataField(const std::wstring &line, const wchar_t *key);
+
+std::wstring TestRunSummary(const ManagedApp &app)
+{
+    if (app.testStatusFile.empty())
+        return L"Not configured";
+    std::error_code error;
+    const auto size = std::filesystem::file_size(app.testStatusFile, error);
+    if (error || size > 65536)
+        return L"Unavailable";
+    std::ifstream file(std::filesystem::path(app.testStatusFile), std::ios::binary);
+    if (!file)
+        return L"Unavailable";
+    std::string bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    const std::wstring data(bytes.begin(), bytes.end());
+    const std::wstring state = MetadataField(data, L"status");
+    if (state != L"running" && state != L"completed" && state != L"failed" &&
+        state != L"cancelled" && state != L"pending")
+        return L"Unknown status";
+    const std::wstring completed = MetadataField(data, L"completed");
+    const std::wstring total = MetadataField(data, L"total");
+    std::wstring summary = state;
+    if (!completed.empty() && !total.empty())
+        summary += L" (" + completed + L"/" + total + L")";
+    const std::wstring failed = MetadataField(data, L"failed");
+    const std::wstring passed = MetadataField(data, L"passed");
+    if (!failed.empty() && failed != L"0")
+        summary += L", " + failed + L" failed";
+    if (!passed.empty())
+        summary += L", " + passed + L" passed";
+    return summary;
+}
+
 void UpdateDetailsList()
 {
     if (!g_list || !IsWindow(g_list))
@@ -709,19 +744,21 @@ void UpdateDetailsList()
             pids = L"-";
         }
 
-        ListView_SetItemText(g_list, row, 2, pids.data());
+        ListView_SetItemText(g_list, row, 3, pids.data());
 
         std::wstring autoText = app.autoStart ? L"Yes" : L"No";
-        ListView_SetItemText(g_list, row, 3, autoText.data());
+        ListView_SetItemText(g_list, row, 4, autoText.data());
 
         std::wstring restartText = app.restartOnFailure ? L"Yes" : L"No";
-        ListView_SetItemText(g_list, row, 4, restartText.data());
+        ListView_SetItemText(g_list, row, 5, restartText.data());
 
         std::wstring monitorText = app.monitorOnly ? L"Yes" : L"No";
-        ListView_SetItemText(g_list, row, 5, monitorText.data());
+        ListView_SetItemText(g_list, row, 6, monitorText.data());
 
         const wchar_t *command = app.monitorOnly ? L"Client-managed (monitor only)" : app.command.c_str();
-        ListView_SetItemText(g_list, row, 6, const_cast<wchar_t *>(command));
+        ListView_SetItemText(g_list, row, 7, const_cast<wchar_t *>(command));
+        std::wstring runSummary = TestRunSummary(app);
+        ListView_SetItemText(g_list, row, 2, runSummary.data());
     }
 
     const bool controllable = selectedIndex >= 0 && selectedIndex < static_cast<int>(g_apps.size()) &&
@@ -1268,7 +1305,7 @@ void CreateDetailsWindow()
     const int width = ScaleForDpi(1020, dpi);
     const int height = ScaleForDpi(650, dpi);
 
-    g_detailsWindow = CreateWindowExW(WS_EX_APPWINDOW, kDetailsClass, L"MCP Activity v1.1.0 - Details",
+    g_detailsWindow = CreateWindowExW(WS_EX_APPWINDOW, kDetailsClass, L"MCP Activity v1.2.0 - Details",
                                       WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, width,
                                       height, nullptr, nullptr, g_instance, nullptr);
 }
@@ -1567,9 +1604,9 @@ void InitializeDetailsControls(HWND hwnd)
         int width;
     };
 
-    const Column columns[] = {{L"MCP application", 165}, {L"Status", 100}, {L"PID(s)", 200},
-                              {L"Auto start", 90},       {L"Restart", 90}, {L"Monitor only", 132},
-                              {L"Command", 390}};
+    const Column columns[] = {{L"MCP application", 195}, {L"Status", 105}, {L"Test run", 250}, {L"PID(s)", 160},
+                              {L"Auto start", 95}, {L"Restart", 80}, {L"Monitor only", 110},
+                              {L"Command", 210}};
 
     for (int i = 0; i < static_cast<int>(std::size(columns)); ++i)
     {
@@ -2405,7 +2442,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
     const int mainWidth = ScaleForDpi(470, startupDpi);
     const int mainHeight = ScaleForDpi(170 + 40 * static_cast<int>(g_apps.size()), startupDpi);
 
-    g_mainWindow = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, kMainClass, L"MCP Activity v1.1.0",
+    g_mainWindow = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, kMainClass, L"MCP Activity v1.2.0",
                                    WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT,
                                    mainWidth, mainHeight, nullptr, nullptr, g_instance, nullptr);
 

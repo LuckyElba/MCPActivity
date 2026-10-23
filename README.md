@@ -1,6 +1,6 @@
-# MCP Activity
+# MCP Activity v1.2.0
 
-**Current version: 1.1.0**
+MCP Activity is a lightweight Windows tray app for **monitoring, managing, and troubleshooting Model Context Protocol (MCP) servers**. It lets you see which helpers are running, restart managed servers when needed, and inspect optional communication diagnostics without navigating several consoles.
 
 ## Author and origin
 
@@ -15,9 +15,53 @@ It may be used, modified, distributed, and used commercially for any lawful
 purpose, provided attribution to D. Matthew Pegg / PeggSoft and a reference to
 the original source repository are retained. See `LICENSE` for the full terms.
 
-MCP Activity is a native x64 Windows tray application for supervising local MCP (Model Context Protocol) helper applications.
+## Screenshots
 
-It provides a compact status popup and a larger management window for starting, stopping, restarting, and monitoring MCP processes without leaving command-prompt or PowerShell windows open.
+### Compact status window
+
+![MCP Activity compact server-status window](docs/screenshots/status-window.png)
+
+### Details and test-run monitoring
+
+![MCP Activity Details showing the test-run status column](docs/screenshots/test-run-monitoring.png)
+
+*Actual MCP Activity window captured with WindowCaptureMCP using an isolated, example-only configuration. The test-run status is supplied by a sample JSON file; two harmless demo processes are genuinely running to demonstrate the green process-status indicators, rather than real MCP servers. This illustrates why test status and server process status must be treated separately.*
+
+## Why use MCP Activity?
+
+- **Visibility:** see running and stopped servers and their process IDs in one place.
+- **Recovery:** start, stop, or restart managed servers, with optional automatic recovery.
+- **Safety:** observe client-managed servers using Monitor Only without interfering with their lifecycle.
+- **Diagnostics:** inspect opt-in metadata about MCP requests, latency, sizes, and errors.
+- **Test progress:** independently monitor a test runner's declared run status.
+
+## Quick start
+
+Download the Windows x64 executable from [GitHub Releases](https://github.com/LuckyElba/MCPActivity/releases). Launch it once to generate an example INI alongside the EXE. The generated example profiles enable auto-start and may attempt to launch companion tools; disable or edit unused profiles before regular use. Then configure process identification and optional commands for your MCP servers. Restart MCP Activity to load any edits, and open **Details** to monitor your servers.
+
+## Example: monitoring an MCP test runner
+
+An MCP server can be alive while a test suite is finished, failed, or cancelled. **Server running does not mean tests running.** For a runner that publishes a status file, configure:
+
+```ini
+[Example Test Runner]
+Command=python.exe C:\MCPServers\TestRunner\server.py
+WorkingDirectory=C:\MCPServers\TestRunner
+MatchExecutable=python.exe
+Match1=TestRunner
+Match2=server.py
+AutoStart=1
+RestartOnFailure=1
+TestStatusFile=C:\MCPServers\TestRunner\test-status.json
+```
+
+The test runner must write the JSON status file itself, preferably by atomic replacement when a run changes. The following data is illustrative, not a real test result:
+
+```json
+{"status":"running","completed":32,"total":45,"passed":30,"failed":2}
+```
+
+Accepted `status` values are `pending`, `running`, `completed`, `failed`, and `cancelled`. MCP Activity displays the state and completed/total counts, as well as optional passed/failed counts, in a separate **Test run** column. A missing configured file displays **Unavailable**; profiles without a test status path display **Not configured**. MCP Activity does not infer whether a run has completed from the MCP process being alive. Stale status files retain the last reported state: if a runner crashes without updating its file, the last status may remain visible.
 
 ## Features
 
@@ -39,8 +83,7 @@ It provides a compact status popup and a larger management window for starting, 
 - Hidden child-process launching with no console window
 - WMI-based process discovery and adoption of already-running instances
 
-The current default configuration supervises Desktop Commander Remote and the
-WindowCaptureMCP screenshot service.
+The generated sample configuration includes profiles for Desktop Commander Remote and WindowCaptureMCP. Both tools must be installed separately; disable unused profiles.
 
 ## Companion applications
 
@@ -104,7 +147,7 @@ Requirements:
 
 From a Developer Command Prompt, open `MCPActivity.sln` and build `Release|x64`.
 
-The included `build.bat` also builds the Release x64 configuration using MSBuild.
+The included `build.bat` currently assumes a specific Visual Studio 18 Insiders path. You may need to edit that path for your installation; building the solution directly in Visual Studio is also supported.
 
 ## Configuration
 
@@ -115,7 +158,7 @@ The runtime INI is intentionally not committed because commands and working
 directories are machine-specific. If the file does not exist, MCP Activity creates
 a default configuration for Desktop Commander Remote and WindowCaptureMCP.
 
-Configuration loads every application section except [General]. Existing section names remain compatible:
+Configuration loads every application section except `[General]`. Existing section names remain compatible:
 
     [Desktop Commander]
     [ScreenShot]
@@ -174,9 +217,7 @@ If WindowCaptureMCP is installed somewhere else, change both paths in `Command`
 and change `WorkingDirectory` to match.
 
 `Match1=windowcapturemcp` and `Match2=server.py` allow MCP Activity to identify
-the WindowCaptureMCP server process from its command line. The section is called
-`[ScreenShot]` because that is the section name currently expected by MCP
-Activity.
+the WindowCaptureMCP server process from its command line. The `[ScreenShot]` section name is only an example. Any application section name except `[General]` is supported.
 
 WindowCaptureMCP repository:
 
@@ -211,7 +252,7 @@ the INI in the Windows default editor.
 
 ## Source formatting
 
-The project uses Allman brace formatting. The included `.clang-format` contains the formatting rules used for `main.cpp`.
+The project includes `.clang-format` rules for C++ source formatting.
 
 ### Monitoring client-managed processes
 
