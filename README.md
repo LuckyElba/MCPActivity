@@ -1,4 +1,4 @@
-# MCP Activity v1.2.0
+# MCP Activity v1.2.1.1
 
 MCP Activity is a lightweight Windows tray app for **monitoring, managing, and troubleshooting Model Context Protocol (MCP) servers**. It lets you see which helpers are running, restart managed servers when needed, and inspect optional communication diagnostics without navigating several consoles.
 

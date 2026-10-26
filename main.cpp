@@ -876,15 +876,28 @@ int SelectedAppIndex()
 
 void PositionMainWindow(HWND hwnd)
 {
+    // Size the client area for every configured row and the Details button.
+    // Window decorations must not consume space reserved for the controls.
+    const UINT dpi = GetDpiForWindow(hwnd);
+    const int minClientWidth = ScaleForDpi(470, dpi);
+    const int minClientHeight = ScaleForDpi(135 + 40 * static_cast<int>(g_apps.size()), dpi);
+    RECT client{};
+    RECT outer{};
+    GetClientRect(hwnd, &client);
+    GetWindowRect(hwnd, &outer);
+    const int decorationWidth = (outer.right - outer.left) - (client.right - client.left);
+    const int decorationHeight = (outer.bottom - outer.top) - (client.bottom - client.top);
+    const int requiredWidth = minClientWidth + decorationWidth;
+    const int requiredHeight = minClientHeight + decorationHeight;
     RECT work{};
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
 
-    RECT window{};
-    GetWindowRect(hwnd, &window);
-    int width = window.right - window.left;
-    int height = window.bottom - window.top;
-    int x = work.right - width - 18;
-    int y = work.bottom - height - 18;
+    const int availableWidth = work.right - work.left;
+    const int availableHeight = work.bottom - work.top;
+    const int width = std::min(requiredWidth, availableWidth);
+    const int height = std::min(requiredHeight, availableHeight);
+    const int x = std::max(work.left, work.right - width - ScaleForDpi(18, dpi));
+    const int y = std::max(work.top, work.bottom - height - ScaleForDpi(18, dpi));
     SetWindowPos(hwnd, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
 }
 
@@ -1305,7 +1318,7 @@ void CreateDetailsWindow()
     const int width = ScaleForDpi(1020, dpi);
     const int height = ScaleForDpi(650, dpi);
 
-    g_detailsWindow = CreateWindowExW(WS_EX_APPWINDOW, kDetailsClass, L"MCP Activity v1.2.0 - Details",
+    g_detailsWindow = CreateWindowExW(WS_EX_APPWINDOW, kDetailsClass, L"MCP Activity v1.2.1.1 - Details",
                                       WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, width,
                                       height, nullptr, nullptr, g_instance, nullptr);
 }
@@ -2442,7 +2455,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
     const int mainWidth = ScaleForDpi(470, startupDpi);
     const int mainHeight = ScaleForDpi(170 + 40 * static_cast<int>(g_apps.size()), startupDpi);
 
-    g_mainWindow = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, kMainClass, L"MCP Activity v1.2.0",
+    g_mainWindow = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, kMainClass, L"MCP Activity v1.2.1.1",
                                    WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT,
                                    mainWidth, mainHeight, nullptr, nullptr, g_instance, nullptr);
 
